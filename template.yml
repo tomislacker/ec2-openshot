@@ -1,0 +1,265 @@
+---
+AWSTemplateFormatVersion: 2010-09-09
+Description: OpenShot Renderer
+
+Parameters:
+  BlockDurationMinutes:
+    Type: Number
+    AllowedValues: [0, 60, 120, 180, 240, 300, 360]
+    Default: 0
+
+  DestinationBucket:
+    Type: String
+
+  DestinationKey:
+    Type: String
+
+  DiskSize:
+    Type: Number
+    Default: 30
+    MinValue: 8
+
+  EnableSpotPricing:
+    Type: String
+    AllowedValues: [false, true]
+    Default: true
+
+  InstanceInterruptionBehavior:
+    Type: String
+    AllowedValues: [hibernate, stop, terminate]
+    Default: terminate
+
+  InstanceType:
+    Type: String
+    Default: m5.large
+
+  KeyName:
+    Type: String
+
+  MaxPrice:
+    Type: Number
+    Default: 0
+    MinValue: 0
+
+  SourceBucket:
+    Type: String
+
+  SourceKey:
+    Type: String
+
+  UserCidr:
+    AllowedPattern: '^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/([0-9]|[1-2][0-9]|3[0-2]))$'
+    Type: String
+    Default: 0.0.0.0/0
+
+Mappings:
+  AmiId:
+    # Ubuntu Server 18.04 LTS (HVM), SSD Volume Type
+    # Ubuntu Server 18.04 LTS (HVM),EBS General Purpose (SSD) Volume Type.
+    us-east-1:
+      ubuntu: ami-07ebfd5b3428b6f4d
+
+Conditions:
+  HasBlockDurationMinutes: !Not [!Equals [!Ref BlockDurationMinutes, 0]]
+  HasMaxPrice: !Not [!Equals [!Ref MaxPrice, 0]]
+  UseSpotPricing: !Equals [!Ref EnableSpotPricing, 'true']
+
+Outputs: {}
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.255.255.0/28
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Sub ${AWS::Region}a
+      CidrBlock: 10.255.255.0/28
+      VpcId: !Ref VPC
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  RouteTableR1:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref RouteTable
+
+  RouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        -
+          PolicyName: "S3"
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              -
+                Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:List*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${SourceBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${SourceBucket}/${SourceKey}
+              -
+                Effect: Allow
+                Action:
+                  - s3:Get*
+                  - s3:List*
+                  - s3:PutObject
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${DestinationBucket}
+                  - !Sub arn:${AWS::Partition}:s3:::${DestinationBucket}/${DestinationKey}
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: !Sub Instance access for ${AWS::StackName}
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref UserCidr
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: !Ref UserCidr
+      VpcId: !Ref VPC
+
+  InstanceTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: !Ref DiskSize
+              VolumeType: gp2
+              DeleteOnTermination: true
+        IamInstanceProfile:
+          Name: !Ref InstanceProfile
+        ImageId: !FindInMap [AmiId, !Ref 'AWS::Region', ubuntu]
+        InstanceInitiatedShutdownBehavior: terminate
+        InstanceMarketOptions: !If
+          - UseSpotPricing
+          -
+            MarketType: spot
+            SpotOptions:
+              BlockDurationMinutes: !If
+                - HasBlockDurationMinutes
+                - !Ref BlockDurationMinutes
+                - !Ref AWS::NoValue
+              InstanceInterruptionBehavior: !Ref InstanceInterruptionBehavior
+              MaxPrice: !If
+                - HasMaxPrice
+                - !Ref MaxPrice
+                - !Ref AWS::NoValue
+              SpotInstanceType: one-time
+          - !Ref AWS::NoValue
+        InstanceType: !Ref InstanceType
+        KeyName: !Ref KeyName
+        Monitoring:
+          Enabled: false
+
+  Instance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: P20M
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          setup: ['setup']
+        setup:
+          commands:
+            setPass: usermode --password password ubuntu
+          packages:
+            apt:
+              lxde: []
+              openshot-qt: []
+              tcpdump: []
+              xrdp: []
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref InstanceTemplate
+        Version: !GetAtt InstanceTemplate.LatestVersionNumber
+      NetworkInterfaces:
+        -
+          AssociatePublicIpAddress: true
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+          SubnetId: !Ref Subnet
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+
+          # Install aws-cfn-bootstrap
+          apt-get update -y
+          apt-get install -y python-setuptools
+          wget https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          python /usr/lib/python2.7/dist-packages/easy_install.py \
+              --script-dir /opt/aws/bin \
+              aws-cfn-bootstrap-latest.tar.gz
+
+          send_cfn_signal ()
+          {
+              [[ $? -eq 0 ]] && success=true || success=false
+
+              # Advise CloudFormation that instance creation is complete or
+              # has failed
+              /opt/aws/bin/cfn-signal \
+                --region ${AWS::Region} \
+                --stack ${AWS::StackName} \
+                --success $success \
+                --resource Instance
+          }
+          trap send_cfn_signal EXIT
+
+          /opt/aws/bin/cfn-init -v \
+            --region ${AWS::Region} \
+            --stack ${AWS::StackName} \
+            --resource Instance \
+            --configsets setup
+
+# vim: ft=yaml.cloudformation sw=2 ts=2

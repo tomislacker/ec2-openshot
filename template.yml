@@ -87,7 +87,7 @@ Resources:
   Subnet:
     Type: AWS::EC2::Subnet
     Properties:
-      AvailabilityZone: !Sub ${AWS::Region}a
+      AvailabilityZone: !Sub ${AWS::Region}b
       CidrBlock: 10.255.255.0/28
       VpcId: !Ref VPC
 
@@ -205,7 +205,7 @@ Resources:
     Type: AWS::EC2::Instance
     CreationPolicy:
       ResourceSignal:
-        Timeout: P20M
+        Timeout: PT20M
     Metadata:
       AWS::CloudFormation::Init:
         configSets:

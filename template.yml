@@ -212,11 +212,20 @@ Resources:
           setup: ['setup']
         setup:
           commands:
-            setPass: usermode --password password ubuntu
+            01ebsMakeDir:
+              command: mkdir -pv /data
+            02ebsFormat:
+              command: mkfs.ext4 /dev/nvme0n1
+            03ebsMount:
+              command: mount /dev/nvme0n1 /data
+            04setPass:
+              command: usermode --password password ubuntu
           packages:
             apt:
+              awscli: []
               lxde: []
               openshot-qt: []
+              python-pip: []
               tcpdump: []
               xrdp: []
     Properties:
